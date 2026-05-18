@@ -205,16 +205,15 @@ Read and analyze these images:
 Convert presentations to individual slide images for visual inspection:
 
 ```bash
-python scripts/office/soffice.py --headless --convert-to pdf output.pptx
-pdftoppm -jpeg -r 150 output.pdf slide
+python scripts/render_slides.py output.pptx --output_dir slides
 ```
 
-This creates `slide-01.jpg`, `slide-02.jpg`, etc.
+This creates `slide-1.png`, `slide-2.png`, etc. It uses LibreOffice and Poppler when available, and falls back to a python-pptx/Pillow overview renderer when `soffice` is not installed.
 
 To re-render specific slides after fixes:
 
 ```bash
-pdftoppm -jpeg -r 150 -f N -l N output.pdf slide-fixed
+python scripts/render_slides.py output.pptx --output_dir slides-fixed
 ```
 
 ---
@@ -222,10 +221,10 @@ pdftoppm -jpeg -r 150 -f N -l N output.pdf slide-fixed
 ## Dependencies
 
 - `pip install "markitdown[pptx]"` - text extraction
-- `pip install Pillow` - thumbnail grids
+- `pip install Pillow python-pptx pdf2image numpy` - thumbnail grids, fallback rendering, and overflow checks
 - `npm install -g pptxgenjs` - creating from scratch
-- LibreOffice (`soffice`) - PDF conversion (auto-configured for sandboxed environments via `scripts/office/soffice.py`)
-- Poppler (`pdftoppm`) - PDF to images
+- LibreOffice (`soffice`) - preferred PDF conversion path (auto-configured for sandboxed environments via `scripts/office/soffice.py`)
+- Poppler (`pdftoppm`) - preferred PDF to image path
 
 ---
 

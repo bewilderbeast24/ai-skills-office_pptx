@@ -20,6 +20,11 @@ from pathlib import Path
 import defusedxml.minidom
 from validators import DOCXSchemaValidator, PPTXSchemaValidator, RedliningValidator
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 def pack(
     input_directory: str,
