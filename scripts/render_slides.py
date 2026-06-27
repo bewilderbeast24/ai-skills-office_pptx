@@ -15,6 +15,7 @@ Dependencies: pip install pdf2image Pillow
 """
 
 import argparse
+import shutil
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
@@ -24,6 +25,8 @@ from typing import Sequence, cast
 from zipfile import ZipFile
 
 from pdf2image import convert_from_path
+from PIL import Image, ImageDraw, ImageFont
+from pptx import Presentation
 
 # Import our sandboxed soffice helper
 try:
@@ -40,9 +43,10 @@ EMU_PER_INCH: int = 914_400
 def _run_soffice(args: list[str], outdir: str, user_profile: str) -> None:
     """Run soffice with our sandbox-aware env and a unique user profile."""
     env = get_soffice_env()
+    profile_uri = __import__("pathlib").Path(user_profile).resolve().as_uri()
     cmd = [
         "soffice",
-        f"-env:UserInstallation=file://{user_profile}",
+        f"-env:UserInstallation={profile_uri}",
         "--invisible",
         "--headless",
         "--norestore",
@@ -92,6 +96,9 @@ def rasterize(input_path: str, out_dir: str, dpi: int) -> Sequence[str]:
     input_path = abspath(input_path)
     stem = splitext(basename(input_path))[0]
 
+    if not input_path.lower().endswith(".pdf") and not _find_soffice():
+        return _rasterize_with_python_pptx(input_path, out_dir, dpi)
+
     with tempfile.TemporaryDirectory(prefix="soffice_profile_") as user_profile:
         with tempfile.TemporaryDirectory(prefix="soffice_convert_") as convert_dir:
             is_pdf = input_path.lower().endswith(".pdf")
@@ -102,20 +109,25 @@ def rasterize(input_path: str, out_dir: str, dpi: int) -> Sequence[str]:
             )
 
             if not pdf_path or not exists(pdf_path):
+                if not is_pdf:
+                    return _rasterize_with_python_pptx(input_path, out_dir, dpi)
                 raise RuntimeError("Failed to produce PDF for rasterization.")
 
-            paths_raw = cast(
-                list[str],
-                convert_from_path(
-                    pdf_path,
-                    dpi=dpi,
-                    fmt="png",
-                    thread_count=8,
-                    output_folder=out_dir,
-                    paths_only=True,
-                    output_file="slide",
-                ),
-            )
+            try:
+                paths_raw = cast(
+                    list[str],
+                    convert_from_path(
+                        pdf_path,
+                        dpi=dpi,
+                        fmt="png",
+                        thread_count=8,
+                        output_folder=out_dir,
+                        paths_only=True,
+                        output_file="slide",
+                    ),
+                )
+            except Exception:
+                paths_raw = list(_rasterize_pdf_with_pypdfium(pdf_path, out_dir, dpi))
 
     # Rename to clean slide-1.png, slide-2.png, ... format
     slides = []
@@ -128,6 +140,152 @@ def rasterize(input_path: str, out_dir: str, dpi: int) -> Sequence[str]:
         slides.append((slide_num, dst_path))
     slides.sort(key=lambda t: t[0])
     return [path for _, path in slides]
+
+
+def _find_soffice() -> str | None:
+    found = shutil.which("soffice")
+    if found:
+        return found
+    for candidate in (
+        r"C:\Program Files\LibreOffice\program\soffice.exe",
+        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+    ):
+        if exists(candidate):
+            return candidate
+    return None
+
+
+def _rasterize_pdf_with_pypdfium(pdf_path: str, out_dir: str, dpi: int) -> Sequence[str]:
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(pdf_path)
+    scale = dpi / 72
+    paths: list[str] = []
+    try:
+        for idx in range(len(pdf)):
+            page = pdf[idx]
+            try:
+                bitmap = page.render(scale=scale)
+                try:
+                    image = bitmap.to_pil()
+                    path = join(out_dir, f"slide-pdfium-{idx + 1}.png")
+                    image.save(path)
+                    paths.append(path)
+                finally:
+                    if hasattr(bitmap, "close"):
+                        bitmap.close()
+            finally:
+                if hasattr(page, "close"):
+                    page.close()
+    finally:
+        if hasattr(pdf, "close"):
+            pdf.close()
+    return paths
+
+
+def _rgb_to_hex(rgb, default: str) -> str:
+    try:
+        return f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+    except Exception:
+        return default
+
+
+def _shape_fill(shape, default: str = "#F2F2F2") -> str:
+    try:
+        fill = shape.fill
+        if fill.type is None:
+            return default
+        return _rgb_to_hex(fill.fore_color.rgb, default)
+    except Exception:
+        return default
+
+
+def _text_color(run, default: str = "#111111") -> str:
+    try:
+        return _rgb_to_hex(run.font.color.rgb, default)
+    except Exception:
+        return default
+
+
+def _font(size: int):
+    try:
+        return ImageFont.truetype("arial.ttf", max(8, size))
+    except Exception:
+        return ImageFont.load_default()
+
+
+def _rasterize_with_python_pptx(input_path: str, out_dir: str, dpi: int) -> Sequence[str]:
+    """Fallback visual overview renderer used when LibreOffice is unavailable.
+
+    This is not a pixel-perfect PowerPoint renderer. It draws common shapes,
+    text, and chart placeholders well enough for thumbnail grids and overflow
+    checks to keep working in lightweight environments.
+    """
+    prs = Presentation(input_path)
+    width_px = max(1, round(int(prs.slide_width) / EMU_PER_INCH * dpi))
+    height_px = max(1, round(int(prs.slide_height) / EMU_PER_INCH * dpi))
+    sx = width_px / int(prs.slide_width)
+    sy = height_px / int(prs.slide_height)
+
+    paths: list[str] = []
+    for idx, slide in enumerate(prs.slides, start=1):
+        bg = "#FFFFFF"
+        try:
+            bg = _rgb_to_hex(slide.background.fill.fore_color.rgb, bg)
+        except Exception:
+            pass
+        img = Image.new("RGB", (width_px, height_px), bg)
+        draw = ImageDraw.Draw(img)
+
+        for shape in slide.shapes:
+            x = round(int(shape.left) * sx)
+            y = round(int(shape.top) * sy)
+            w = round(int(shape.width) * sx)
+            h = round(int(shape.height) * sy)
+            if w <= 0 or h <= 0:
+                continue
+
+            fill = _shape_fill(shape)
+            outline = "#777777"
+            try:
+                outline = _rgb_to_hex(shape.line.color.rgb, outline)
+            except Exception:
+                pass
+
+            if getattr(shape, "has_chart", False):
+                draw.rectangle([x, y, x + w, y + h], fill="#F8F8F8", outline=outline, width=2)
+                draw.text((x + 12, y + 12), "Chart", fill="#333333", font=_font(18))
+            elif not getattr(shape, "has_text_frame", False) or not shape.text.strip():
+                draw.rectangle([x, y, x + w, y + h], fill=fill, outline=outline)
+
+            if getattr(shape, "has_text_frame", False) and shape.text_frame:
+                tx = x + 8
+                ty = y + 6
+                for paragraph in shape.text_frame.paragraphs:
+                    line = "".join(run.text for run in paragraph.runs) or paragraph.text
+                    if not line:
+                        ty += 14
+                        continue
+                    first_run = paragraph.runs[0] if paragraph.runs else None
+                    size = 16
+                    color = "#111111"
+                    if first_run is not None:
+                        try:
+                            if first_run.font.size:
+                                size = max(8, round(first_run.font.size.pt * dpi / 96))
+                        except Exception:
+                            pass
+                        color = _text_color(first_run, color)
+                    font = _font(size)
+                    draw.multiline_text((tx, ty), line, fill=color, font=font, spacing=4)
+                    bbox = draw.multiline_textbbox((tx, ty), line, font=font, spacing=4)
+                    ty = bbox[3] + 6
+
+        path = join(out_dir, f"slide-{idx}.png")
+        img.save(path)
+        paths.append(path)
+
+    return paths
 
 
 def main() -> None:

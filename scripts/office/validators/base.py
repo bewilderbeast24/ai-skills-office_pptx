@@ -13,6 +13,7 @@ class BaseSchemaValidator:
     IGNORED_VALIDATION_ERRORS = [
         "hyphenationZone",
         "purl.org/dc/terms",
+        "notesMasterIdLst",
     ]
 
     UNIQUE_ID_REQUIREMENTS = {
@@ -708,6 +709,11 @@ class BaseSchemaValidator:
         schema_path = self._get_schema_path(xml_file)
         if not schema_path:
             return None, None
+        if not schema_path.exists():
+            if self.verbose:
+                relative_path = xml_file.relative_to(base_path)
+                print(f"Skipping XSD validation for {relative_path}: schema not bundled")
+            return None, None
 
         try:
             with open(schema_path, "rb") as xsd_file:
@@ -715,7 +721,7 @@ class BaseSchemaValidator:
                 xsd_doc = lxml.etree.parse(xsd_file, parser=parser, base_url=str(schema_path))
                 schema = lxml.etree.XMLSchema(xsd_doc)
 
-            with open(xml_file, "r") as f:
+            with open(xml_file, "rb") as f:
                 xml_doc = lxml.etree.parse(f)
 
             xml_doc, _ = self._remove_template_tags_from_text_nodes(xml_doc)

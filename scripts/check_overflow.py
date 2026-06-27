@@ -34,6 +34,11 @@ from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
 from pptx.util import Emu
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 PAD_PX: int = 100
 PAD_RGB = (200, 200, 200)
 EMU_PER_INCH: int = 914_400
@@ -151,11 +156,11 @@ def main() -> None:
     failing = check_overflow(args.input_path, args.width, args.height)
     if failing:
         print(
-            f"⚠ Overflow detected on {len(failing)} slide(s): " + ", ".join(str(s) for s in failing)
+            f"Overflow detected on {len(failing)} slide(s): " + ", ".join(str(s) for s in failing)
         )
         sys.exit(1)
     else:
-        print("No overflow detected ✓")
+        print("No overflow detected")
 
 
 if __name__ == "__main__":
